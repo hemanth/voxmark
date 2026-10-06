@@ -1,0 +1,53 @@
+{
+  "name": "voxmark",
+  "version": "0.2.0",
+  "description": "Point at your app, say what you want changed out loud, and watch your code update itself in real time via WebMCP and coding agents.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./mcp": "./src/mcp-server.js"
+  },
+  "bin": {
+    "voxmark": "bin/voxmark.js",
+    "vm": "bin/voxmark.js"
+  },
+  "files": [
+    "bin/voxmark.js",
+    "src",
+    "demo",
+    "extension",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node ./bin/voxmark.js",
+    "demo": "node ./bin/voxmark.js --demo",
+    "mcp": "node ./src/mcp-server.js",
+    "test": "node --test ./test/server.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hemanth/voxmark.git"
+  },
+  "homepage": "https://github.com/hemanth/voxmark#readme",
+  "bugs": {
+    "url": "https://github.com/hemanth/voxmark/issues"
+  },
+  "keywords": [
+    "voxmark",
+    "webmcp",
+    "antigravity",
+    "agy",
+    "agent-feedback",
+    "voice-annotation",
+    "chrome-extension",
+    "ui-feedback",
+    "mcp"
+  ],
+  "author": "Hemanth HM <hemanth@h3manth.com> (https://h3manth.com)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

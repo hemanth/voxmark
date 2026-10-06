@@ -1,0 +1,9 @@
+node_modules/
+.quick-feedback/
+.DS_Store
+renders/
+videos/
+*.mp4
+*.wav
+.env
+
