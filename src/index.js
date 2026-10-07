@@ -27,7 +27,7 @@ export default async function voxmark(input = {}, options = {}) {
     agent: opts.agent || process.env.VOXMARK_AGENT || process.env.QF_AGENT || 'agy',
     autoExecute: opts.autoExecute ?? true,
     conversationId: opts.conversation || opts.conversationId || null,
-    customAgentRunner: opts.customAgentRunner || null,
+    customAgentRunner: opts.customAgentRunner || undefined,
     onFeedbackReceived: (session) => {
       events.emit('feedback', session);
       if (typeof opts.onFeedback === 'function') opts.onFeedback(session);
@@ -36,18 +36,19 @@ export default async function voxmark(input = {}, options = {}) {
   });
 
   const info = await bridge.start();
-  return {
+  const instance = {
     url: info.url,
     port: info.port,
     targetUrl: info.targetUrl,
     mode: info.mode,
     server: bridge.server,
-    on: (event, handler) => {
+    on(event, handler) {
       events.on(event, handler);
-      return this;
+      return instance;
     },
     stop: () => bridge.stop()
   };
+  return instance;
 }
 
 export { voxmark, createFeedbackServer, openUrlInBrowser, buildAgentPrompt, runCodingAgent, warmUpCodingAgent };

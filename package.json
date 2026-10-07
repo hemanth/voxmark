@@ -1,6 +1,6 @@
 {
   "name": "voxmark",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Point at your app, say what you want changed out loud, and watch your code update itself in real time via WebMCP and coding agents.",
   "type": "module",
   "main": "./src/index.js",

@@ -437,3 +437,100 @@ test('createFeedbackServer automatically picks next available free port when mul
     fs.rmSync(appDir2, { recursive: true, force: true });
   }
 });
+
+test('resolveStaticFile and voxmark() handle malformed URIs, sibling prefix traversal, and event chaining safely', async () => {
+  const { voxmark } = await import('../src/index.js');
+  const { resolveStaticFile } = await import('../src/app-target.js');
+
+  const baseTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-sec-'));
+  const appDir = path.join(baseTmp, 'public');
+  const siblingSecretDir = path.join(baseTmp, 'public-secret');
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.mkdirSync(siblingSecretDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, 'index.html'), '<!DOCTYPE html><html><body>Safe App</body></html>');
+  fs.writeFileSync(path.join(siblingSecretDir, 'secret.txt'), 'TOP_SECRET');
+
+  const instance = await voxmark(appDir, { port: 0, autoExecute: false, open: false });
+  let emittedSession = null;
+  const chained = instance.on('feedback', (s) => {
+    emittedSession = s;
+  });
+
+  try {
+    assert.equal(chained, instance);
+
+    // Malformed URI should return null (404), not throw URIError
+    assert.equal(resolveStaticFile(appDir, '/%E0%A4%A'), null);
+    const badUriRes = await fetch(`${instance.url}/%E0%A4%A`);
+    assert.equal(badUriRes.status, 404);
+
+    // Sibling prefix traversal must not escape appDir
+    assert.equal(resolveStaticFile(appDir, '/../public-secret/secret.txt'), null);
+
+    // Feedback event chaining works
+    const fbRes = await fetch(`${instance.url}/api/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: instance.url,
+        fullTranscript: 'make heading bold',
+        annotations: []
+      })
+    });
+    assert.equal(fbRes.status, 200);
+    assert.ok(emittedSession);
+    assert.equal(emittedSession.fullTranscript, 'make heading bold');
+  } finally {
+    await instance.stop();
+    fs.rmSync(baseTmp, { recursive: true, force: true });
+  }
+});
+
+test('ignores coding agent listeners (agy/language_server) and falls back to static HTML if upstream responds with HTTP-to-HTTPS error', async () => {
+  const http = await import('node:http');
+  const { isIgnoredListeningProcessName, proxyHttpRequest } = await import('../src/app-target.js');
+
+  assert.equal(isIgnoredListeningProcessName('agy'), true);
+  assert.equal(isIgnoredListeningProcessName('language_server_macos_arm'), true);
+  assert.equal(isIgnoredListeningProcessName('claude'), true);
+  assert.equal(isIgnoredListeningProcessName('Google Chrome'), true);
+  assert.equal(isIgnoredListeningProcessName('node'), false);
+  assert.equal(isIgnoredListeningProcessName('vite'), false);
+
+  // Simulate an internal HTTPS server returning Go net/http's 400 "Client sent an HTTP request to an HTTPS server."
+  const fakeHttpsListener = http.createServer((_req, res) => {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Client sent an HTTP request to an HTTPS server.\n');
+  });
+  await new Promise((resolve) => fakeHttpsListener.listen(0, '127.0.0.1', resolve));
+  const fakePort = fakeHttpsListener.address().port;
+
+  let fallbackCalled = false;
+  const wrapperServer = http.createServer((req, res) => {
+    proxyHttpRequest(
+      req,
+      res,
+      `http://127.0.0.1:${fakePort}`,
+      'http://127.0.0.1:4747',
+      () => {
+        fallbackCalled = true;
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<h1>Fallback Static App</h1>');
+        return true;
+      }
+    );
+  });
+  await new Promise((resolve) => wrapperServer.listen(0, '127.0.0.1', resolve));
+  const wrapperPort = wrapperServer.address().port;
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${wrapperPort}/`);
+    assert.equal(res.status, 200);
+    assert.equal(fallbackCalled, true);
+    const text = await res.text();
+    assert.match(text, /Fallback Static App/);
+  } finally {
+    await new Promise((resolve) => wrapperServer.close(resolve));
+    await new Promise((resolve) => fakeHttpsListener.close(resolve));
+  }
+});
