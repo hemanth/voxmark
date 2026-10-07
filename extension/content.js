@@ -605,22 +605,39 @@
   function pickTopDOMElementAtPoint(x, y) {
     const clampedX = Math.max(0, Math.min(window.innerWidth - 1, x));
     const clampedY = Math.max(0, Math.min(window.innerHeight - 1, y));
-    const elements = document.elementsFromPoint(clampedX, clampedY);
-    return (
-      elements.find(
+    let root = document;
+    let picked = null;
+    const visitedRoots = new Set();
+
+    while (root && !visitedRoots.has(root)) {
+      visitedRoots.add(root);
+      const elements =
+        typeof root.elementsFromPoint === 'function'
+          ? root.elementsFromPoint(clampedX, clampedY)
+          : [];
+      const candidate = elements.find(
         (node) =>
           node !== host &&
           !host.contains(node) &&
           node !== document.documentElement &&
           node !== document.body
-      ) || null
-    );
+      );
+      if (!candidate) break;
+      picked = candidate;
+      if (candidate.shadowRoot && candidate !== host) {
+        root = candidate.shadowRoot;
+      } else {
+        break;
+      }
+    }
+    return picked;
   }
 
   function extractElementMetadata(el) {
     const tagName = el.tagName ? el.tagName.toLowerCase() : 'div';
     const selector = buildCleanSelector(el);
-    const componentName = detectFrameworkComponent(el);
+    const fw = inspectFrameworkContext(el);
+    const componentName = fw.componentName;
     const rawText = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
     const textPreview = rawText.slice(0, 80);
     const rect = el.getBoundingClientRect();
@@ -644,6 +661,9 @@
       height: `${Math.round(rect.height)}px`
     };
 
+    const domHierarchy = buildDomHierarchy(el);
+    const nestedChildren = summarizeNestedChildren(el);
+
     let htmlSnippet = el.outerHTML || '';
     if (htmlSnippet.length > 450) {
       const clone = el.cloneNode(false);
@@ -656,11 +676,64 @@
       selector,
       tagName,
       componentName,
+      componentChain: fw.componentChain,
+      sourceLocation: fw.sourceLocation,
+      componentProps: fw.componentProps,
+      domHierarchy,
+      nestedChildren,
       textPreview,
       elementBounds: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
       computedStyles,
       htmlSnippet
     };
+  }
+
+  function buildDomHierarchy(el) {
+    const chain = [];
+    let cur = el;
+    let depth = 0;
+    while (cur && cur.nodeType === 1 && cur !== document.documentElement && depth < 7) {
+      let label = cur.tagName.toLowerCase();
+      if (cur.id) label += `#${cur.id}`;
+      else if (cur.classList && cur.classList.length > 0) {
+        const cls = Array.from(cur.classList)
+          .filter((c) => c && !c.startsWith('vm-') && c.length < 28)
+          .slice(0, 2);
+        if (cls.length) label += `.${cls.join('.')}`;
+      }
+      const dataAttrs = Array.from(cur.attributes || [])
+        .filter((a) => a.name.startsWith('data-') && !a.name.startsWith('data-v-') && a.value.length < 30)
+        .slice(0, 2)
+        .map((a) => `[${a.name}="${a.value}"]`)
+        .join('');
+      if (dataAttrs) label += dataAttrs;
+      chain.unshift(label);
+      cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host) || null;
+      depth++;
+    }
+    return chain.join(' > ');
+  }
+
+  function summarizeNestedChildren(el) {
+    if (!el || !el.querySelectorAll) return [];
+    const descendants = Array.from(
+      el.querySelectorAll('button, input, select, textarea, a, [id], [data-testid], [data-action], [role], h1, h2, h3, h4')
+    ).slice(0, 10);
+    return descendants.map((child) => {
+      const tag = child.tagName.toLowerCase();
+      const sel = buildCleanSelector(child);
+      const comp = inspectFrameworkContext(child).componentName;
+      const text = (child.innerText || child.value || child.getAttribute('aria-label') || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 40);
+      return {
+        tagName: tag,
+        selector: sel,
+        componentName: comp || undefined,
+        text: text || undefined
+      };
+    });
   }
 
   function buildCleanSelector(el) {
@@ -697,29 +770,132 @@
     return parts.join(' > ') || el.tagName.toLowerCase();
   }
 
-  function detectFrameworkComponent(el) {
+  function sanitizePropsSnapshot(rawProps) {
+    if (!rawProps || typeof rawProps !== 'object') return null;
+    const out = {};
+    let count = 0;
+    for (const [k, v] of Object.entries(rawProps)) {
+      if (k === 'children' || k.startsWith('__') || count >= 10) continue;
+      if (typeof v === 'function') {
+        out[k] = `fn(${v.name || 'anonymous'})`;
+        count++;
+      } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+        out[k] = typeof v === 'string' ? v.slice(0, 60) : v;
+        count++;
+      } else if (Array.isArray(v)) {
+        out[k] = `Array(${v.length})`;
+        count++;
+      }
+    }
+    return count > 0 ? out : null;
+  }
+
+  function inspectFrameworkContext(el) {
+    const chain = [];
+    let sourceLocation = null;
+    let componentProps = null;
+
+    // 1. Check explicit dev source attributes (Astro, Vite inspector, custom data-source)
+    let attrNode = el;
+    for (let d = 0; attrNode && attrNode.nodeType === 1 && d < 5; d++) {
+      const astroFile = attrNode.getAttribute('data-astro-source-file');
+      const astroLoc = attrNode.getAttribute('data-astro-source-loc');
+      const vInspector = attrNode.getAttribute('data-v-inspector') || attrNode.getAttribute('data-source-loc');
+      if (astroFile && !sourceLocation) {
+        const line = astroLoc ? Number(astroLoc.split(':')[0]) || null : null;
+        sourceLocation = { fileName: astroFile, lineNumber: line };
+      } else if (vInspector && !sourceLocation) {
+        const parts = vInspector.split(':');
+        if (parts.length >= 2) {
+          sourceLocation = {
+            fileName: parts.slice(0, -2).join(':') || parts[0],
+            lineNumber: Number(parts[parts.length - 2]) || null
+          };
+        }
+      }
+      if (attrNode.__svelte_meta?.loc && !sourceLocation) {
+        sourceLocation = {
+          fileName: attrNode.__svelte_meta.loc.file,
+          lineNumber: attrNode.__svelte_meta.loc.line
+        };
+      }
+      attrNode = attrNode.parentElement;
+    }
+
+    // 2. Walk React Fiber / Vue / Custom Elements
     let cur = el;
     let depth = 0;
-    while (cur && depth < 6) {
+    while (cur && depth < 8) {
+      if (cur.tagName && cur.tagName.includes('-')) {
+        const customTag = `<${cur.tagName.toLowerCase()}>`;
+        if (!chain.includes(customTag)) chain.unshift(customTag);
+      }
+
       for (const key of Object.keys(cur)) {
         if (key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')) {
           let fiber = cur[key];
           while (fiber) {
-            const name = fiber.type && (fiber.type.displayName || fiber.type.name);
+            if (!sourceLocation && fiber._debugSource?.fileName) {
+              sourceLocation = {
+                fileName: fiber._debugSource.fileName,
+                lineNumber: fiber._debugSource.lineNumber || null,
+                columnNumber: fiber._debugSource.columnNumber || null
+              };
+            }
+            const name =
+              fiber.type &&
+              (fiber.type.displayName ||
+                fiber.type.name ||
+                (fiber.type.render && (fiber.type.render.displayName || fiber.type.render.name)));
             if (name && typeof name === 'string' && /^[A-Z]/.test(name)) {
-              return `<${name}>`;
+              const formatted = `<${name}>`;
+              if (!chain.includes(formatted)) {
+                chain.unshift(formatted);
+              }
+              if (!componentProps && fiber.memoizedProps) {
+                componentProps = sanitizePropsSnapshot(fiber.memoizedProps);
+              }
+              if (!sourceLocation && fiber._debugOwner?._debugSource?.fileName) {
+                sourceLocation = {
+                  fileName: fiber._debugOwner._debugSource.fileName,
+                  lineNumber: fiber._debugOwner._debugSource.lineNumber || null
+                };
+              }
             }
             fiber = fiber.return;
           }
+          break;
         }
-        if (key === '__vueParentComponent' && cur[key]?.type?.name) {
-          return `<${cur[key].type.name}>`;
+
+        if (key === '__vueParentComponent' && cur[key]) {
+          let vueComp = cur[key];
+          while (vueComp) {
+            const name = vueComp.type?.name || vueComp.type?.__name;
+            if (name) {
+              const formatted = `<${name}>`;
+              if (!chain.includes(formatted)) chain.unshift(formatted);
+            }
+            if (!sourceLocation && vueComp.type?.__file) {
+              sourceLocation = { fileName: vueComp.type.__file, lineNumber: null };
+            }
+            if (!componentProps && vueComp.props) {
+              componentProps = sanitizePropsSnapshot(vueComp.props);
+            }
+            vueComp = vueComp.parent;
+          }
+          break;
         }
       }
-      cur = cur.parentElement;
+      cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host) || null;
       depth++;
     }
-    return null;
+
+    return {
+      componentName: chain.length > 0 ? chain[chain.length - 1] : null,
+      componentChain: chain,
+      sourceLocation,
+      componentProps
+    };
   }
 
   // --- 0ms Latency WebAudio Level Meter + Per-Element Scoped Speech Recognition ---
@@ -958,6 +1134,11 @@
       selector: meta.selector,
       tagName: meta.tagName,
       componentName: meta.componentName,
+      componentChain: meta.componentChain,
+      sourceLocation: meta.sourceLocation,
+      componentProps: meta.componentProps,
+      domHierarchy: meta.domHierarchy,
+      nestedChildren: meta.nestedChildren,
       textPreview: meta.textPreview,
       computedStyles: meta.computedStyles,
       htmlSnippet: meta.htmlSnippet,
@@ -1274,6 +1455,11 @@
       selector: a.selector,
       tagName: a.tagName,
       componentName: a.componentName,
+      componentChain: a.componentChain,
+      sourceLocation: a.sourceLocation,
+      componentProps: a.componentProps,
+      domHierarchy: a.domHierarchy,
+      nestedChildren: a.nestedChildren,
       textPreview: a.textPreview,
       computedStyles: a.computedStyles,
       htmlSnippet: a.htmlSnippet,
@@ -1794,6 +1980,10 @@
             setTimeout(() => {
               window.location.reload();
             }, 650);
+          } else if (data.type === 'file_changed') {
+            if (!isRecording && (!agentJob || agentJob.status !== 'running')) {
+              window.location.reload();
+            }
           } else if (data.type === 'failed' || data.type === 'error') {
             if (elapsedTimer) clearInterval(elapsedTimer);
             if (agentJob) agentJob.status = 'error';

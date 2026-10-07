@@ -12,13 +12,17 @@ import { runCodingAgent, warmUpCodingAgent } from './agent-runner.js';
 export default async function voxmark(input = {}, options = {}) {
   const opts =
     typeof input === 'string'
-      ? { ...options, dir: input }
+      ? /^https?:\/\//i.test(input)
+        ? { ...options, targetUrl: input }
+        : { ...options, dir: input }
       : { ...input, ...options };
 
   const events = new EventEmitter();
   const bridge = createFeedbackServer({
     port: opts.port ?? Number(process.env.VOXMARK_PORT || process.env.QF_PORT || 4747),
     targetDir: opts.dir || opts.targetDir || process.cwd(),
+    targetUrl: opts.url || opts.targetUrl || process.env.VOXMARK_URL || process.env.QF_URL || null,
+    demo: Boolean(opts.demo),
     agent: opts.agent || process.env.VOXMARK_AGENT || process.env.QF_AGENT || 'agy',
     autoExecute: opts.autoExecute ?? true,
     conversationId: opts.conversation || opts.conversationId || null,
@@ -34,6 +38,8 @@ export default async function voxmark(input = {}, options = {}) {
   return {
     url: info.url,
     port: info.port,
+    targetUrl: info.targetUrl,
+    mode: info.mode,
     server: bridge.server,
     on: (event, handler) => {
       events.on(event, handler);

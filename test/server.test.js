@@ -168,3 +168,240 @@ test('createFeedbackServer writes latest.md, triggers agent runner, and exposes 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('createFeedbackServer serves real static app from targetDir on / with /overlay.js injected instead of demo page', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-real-static-'));
+  fs.writeFileSync(
+    path.join(tmpDir, 'index.html'),
+    '<!DOCTYPE html><html><head><title>Real App</title></head><body><h1 id="real-heading">My Real App</h1><script src="/app.js"></script></body></html>',
+    'utf8'
+  );
+  fs.writeFileSync(path.join(tmpDir, 'app.js'), 'console.log("real app loaded");', 'utf8');
+
+  const bridge = createFeedbackServer({
+    port: 0,
+    targetDir: tmpDir,
+    autoExecute: false
+  });
+  const info = await bridge.start();
+
+  try {
+    assert.equal(info.mode, 'static');
+
+    // GET / should serve the real app's index.html with /overlay.js injected, NOT the Orbital Telemetry demo
+    const rootRes = await fetch(`${info.url}/`);
+    assert.equal(rootRes.status, 200);
+    const rootHtml = await rootRes.text();
+    assert.match(rootHtml, /My Real App/);
+    assert.doesNotMatch(rootHtml, /Orbital Telemetry/);
+    assert.match(rootHtml, new RegExp(`${info.url}/overlay\\.js`));
+
+    // Static assets in targetDir should also be served
+    const jsRes = await fetch(`${info.url}/app.js`);
+    assert.equal(jsRes.status, 200);
+    assert.match(await jsRes.text(), /real app loaded/);
+
+    // GET /demo should still serve the built-in demo sandbox
+    const demoRes = await fetch(`${info.url}/demo`);
+    assert.equal(demoRes.status, 200);
+    const demoHtml = await demoRes.text();
+    assert.match(demoHtml, /Orbital Telemetry/i);
+  } finally {
+    await bridge.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('createFeedbackServer reverse-proxies targetUrl dev server and auto-injects /overlay.js into HTML', async () => {
+  const http = await import('node:http');
+  const upstream = http.createServer((req, res) => {
+    if (req.url === '/api/data') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ items: [1, 2, 3] }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<!DOCTYPE html><html><body><div id="upstream-root">Upstream Dev Server</div></body></html>');
+  });
+
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamPort = upstream.address().port;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-proxy-test-'));
+
+  const bridge = createFeedbackServer({
+    port: 0,
+    targetDir: tmpDir,
+    targetUrl: `http://127.0.0.1:${upstreamPort}`,
+    autoExecute: false
+  });
+  const info = await bridge.start();
+
+  try {
+    assert.equal(info.mode, 'proxy');
+    assert.equal(info.targetUrl, `http://127.0.0.1:${upstreamPort}`);
+
+    const res = await fetch(`${info.url}/`);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /Upstream Dev Server/);
+    assert.doesNotMatch(html, /Orbital Telemetry/);
+    assert.match(html, new RegExp(`${info.url}/overlay\\.js`));
+
+    const apiRes = await fetch(`${info.url}/api/data`);
+    assert.equal(apiRes.status, 200);
+    const data = await apiRes.json();
+    assert.deepEqual(data, { items: [1, 2, 3] });
+  } finally {
+    await bridge.stop();
+    await new Promise((resolve) => upstream.close(resolve));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('createFeedbackServer discovers index.html inside nested subdirectories and auto-spawns npm run dev when configured', async () => {
+  const tmpNestedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-nested-html-'));
+  const subDir = path.join(tmpNestedDir, 'packages', 'web-ui');
+  fs.mkdirSync(subDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(subDir, 'index.html'),
+    '<!DOCTYPE html><html><body><div id="nested-html-app">Nested Directory App</div></body></html>',
+    'utf8'
+  );
+
+  const staticBridge = createFeedbackServer({
+    port: 0,
+    targetDir: tmpNestedDir,
+    autoExecute: false
+  });
+  const staticInfo = await staticBridge.start();
+
+  try {
+    assert.equal(staticInfo.mode, 'static');
+    const res = await fetch(`${staticInfo.url}/`);
+    const html = await res.text();
+    assert.match(html, /Nested Directory App/);
+    assert.match(html, new RegExp(`${staticInfo.url}/overlay\\.js`));
+  } finally {
+    await staticBridge.stop();
+    fs.rmSync(tmpNestedDir, { recursive: true, force: true });
+  }
+
+  // Test auto-spawning npm run dev on a dynamic port and binding to it
+  const tmpDevApp = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-autodev-'));
+  fs.writeFileSync(
+    path.join(tmpDevApp, 'dev-server.js'),
+    `
+      const http = require('node:http');
+      const srv = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<!DOCTYPE html><html><body><main id="spawned-dev">Auto-Spawned Dev App</main></body></html>');
+      });
+      srv.listen(0, '127.0.0.1', () => {
+        console.log('Local: http://localhost:' + srv.address().port + '/');
+      });
+    `,
+    'utf8'
+  );
+  fs.writeFileSync(
+    path.join(tmpDevApp, 'package.json'),
+    JSON.stringify({
+      name: 'sample-dev-app',
+      scripts: {
+        dev: 'node dev-server.js'
+      }
+    }),
+    'utf8'
+  );
+
+  const devBridge = createFeedbackServer({
+    port: 0,
+    targetDir: tmpDevApp,
+    autoExecute: false,
+    autoStartApp: true
+  });
+  const devInfo = await devBridge.start();
+
+  try {
+    assert.equal(devInfo.mode, 'proxy');
+    assert.equal(devInfo.spawnedDevServer, true);
+    assert.match(devInfo.targetUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+
+    const res = await fetch(`${devInfo.url}/`);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /Auto-Spawned Dev App/);
+    assert.match(html, new RegExp(`${devInfo.url}/overlay\\.js`));
+  } finally {
+    await devBridge.stop();
+    fs.rmSync(tmpDevApp, { recursive: true, force: true });
+  }
+});
+
+test('buildAgentPrompt resolves deep nested component hierarchies, sourceLocations, and props across multiple files', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-nested-comp-'));
+  try {
+    const compDir = path.join(tmpDir, 'src', 'components', 'sidebar');
+    fs.mkdirSync(compDir, { recursive: true });
+    const cardFile = path.join(compDir, 'FilterCard.tsx');
+    const sidebarFile = path.join(compDir, 'CaptionSidebar.tsx');
+
+    fs.writeFileSync(
+      cardFile,
+      [
+        'import React from "react";',
+        'export function FilterCard({ activeFilter, onToggleFilter }) {',
+        '  return (',
+        '    <div className="filter-card" data-filter={activeFilter}>',
+        '      <button id="apply-filter-btn" onClick={onToggleFilter}>Apply Filter</button>',
+        '    </div>',
+        '  );',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    fs.writeFileSync(
+      sidebarFile,
+      [
+        'import { FilterCard } from "./FilterCard";',
+        'export function CaptionSidebar() {',
+        '  return <aside className="sidebar-shell"><FilterCard activeFilter="tiktok" /></aside>;',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const prompt = buildAgentPrompt(
+      {
+        id: 'vm-nested-1',
+        url: 'http://127.0.0.1:4747/',
+        title: 'Studio App',
+        fullTranscript: 'when I click Apply Filter, also reset the search input inside CaptionSidebar',
+        annotations: [
+          {
+            number: 1,
+            kind: 'select',
+            selector: '#apply-filter-btn',
+            tagName: 'button',
+            componentName: '<FilterCard>',
+            componentChain: ['<App>', '<CaptionSidebar>', '<FilterCard>'],
+            sourceLocation: { fileName: 'src/components/sidebar/FilterCard.tsx', lineNumber: 5 },
+            componentProps: { activeFilter: 'tiktok', onToggleFilter: 'fn(handleToggle)' },
+            domHierarchy: 'main > aside.sidebar-shell > div.filter-card > button#apply-filter-btn',
+            nestedChildren: [],
+            transcript: 'when I click Apply Filter, also reset the search input inside CaptionSidebar'
+          }
+        ]
+      },
+      { targetDir: tmpDir }
+    );
+
+    assert.match(prompt, /\*\*Component Hierarchy\*\*: `<App> > <CaptionSidebar> > <FilterCard>`/);
+    assert.match(prompt, /\*\*Component Source Location\*\*: `src\/components\/sidebar\/FilterCard\.tsx:5`/);
+    assert.match(prompt, /\*\*Live Component Props \/ Handlers\*\*: `\{"activeFilter":"tiktok","onToggleFilter":"fn\(handleToggle\)"\}`/);
+    assert.match(prompt, /FilterCard\.tsx/);
+    assert.match(prompt, /CaptionSidebar\.tsx/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
