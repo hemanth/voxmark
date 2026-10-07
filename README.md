@@ -23,7 +23,7 @@ bridge.on('feedback', (s) => console.log(s.fullTranscript, s.annotations));
 voxmark --dir /path/to/your/app
 ```
 
-Press `Alt+F` on your page, click or circle any DOM element while speaking (`"center this header"`, `"make this button emerald and animate"`), and hit `Apply`. `voxmark` previews styles in `0ms` via in-browser WebMCP (`navigator.modelContext`), pre-resolves exact 1-indexed source lines, executes a single-turn edit with your coding agent, and auto-refreshes the page.
+Press `Alt+F` on your page, click or circle any DOM element while speaking (`"center this header"`, `"make this button emerald and animate"`), and hit `Apply`. `voxmark` previews styles directly in the DOM via WebMCP (`navigator.modelContext`), pre-resolves 1-indexed source lines, runs a single-turn edit with your coding agent, and refreshes the page.
 
 - `-d, --dir <path>` — target project directory for the agent to edit (default: `cwd`)
 - `-a, --agent <name>` — coding agent CLI to execute (`agy`, `claude`, default: `agy`)
