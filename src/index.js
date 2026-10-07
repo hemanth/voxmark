@@ -1,13 +1,13 @@
 import { EventEmitter } from 'node:events';
-import { createFeedbackServer } from './server.js';
+import { createFeedbackServer, openUrlInBrowser } from './server.js';
 import { buildAgentPrompt } from './prompt-builder.js';
 import { runCodingAgent, warmUpCodingAgent } from './agent-runner.js';
 
 /**
  * Start a Voxmark voice + DOM annotation bridge.
  *
- * @param {string|object} [input] - Target directory path or options object
- * @param {object} [options] - Flat options `{ port, dir, agent, autoExecute, conversationId }`
+ * @param {string|object} [input] - Target directory path, URL, or options object
+ * @param {object} [options] - Flat options `{ port, dir, url, demo, open, agent, autoExecute, conversationId }`
  */
 export default async function voxmark(input = {}, options = {}) {
   const opts =
@@ -23,6 +23,7 @@ export default async function voxmark(input = {}, options = {}) {
     targetDir: opts.dir || opts.targetDir || process.cwd(),
     targetUrl: opts.url || opts.targetUrl || process.env.VOXMARK_URL || process.env.QF_URL || null,
     demo: Boolean(opts.demo),
+    openBrowser: Boolean(opts.open ?? opts.openBrowser ?? false),
     agent: opts.agent || process.env.VOXMARK_AGENT || process.env.QF_AGENT || 'agy',
     autoExecute: opts.autoExecute ?? true,
     conversationId: opts.conversation || opts.conversationId || null,
@@ -49,4 +50,4 @@ export default async function voxmark(input = {}, options = {}) {
   };
 }
 
-export { voxmark, createFeedbackServer, buildAgentPrompt, runCodingAgent, warmUpCodingAgent };
+export { voxmark, createFeedbackServer, openUrlInBrowser, buildAgentPrompt, runCodingAgent, warmUpCodingAgent };

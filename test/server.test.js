@@ -405,3 +405,35 @@ test('buildAgentPrompt resolves deep nested component hierarchies, sourceLocatio
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('createFeedbackServer automatically picks next available free port when multiple apps run concurrently', async () => {
+  const appDir1 = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-multi-app1-'));
+  const appDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-multi-app2-'));
+  fs.writeFileSync(path.join(appDir1, 'index.html'), '<!DOCTYPE html><html><body><h1>App One</h1></body></html>');
+  fs.writeFileSync(path.join(appDir2, 'index.html'), '<!DOCTYPE html><html><body><h1>App Two</h1></body></html>');
+
+  const bridge1 = createFeedbackServer({ port: 4891, targetDir: appDir1, autoExecute: false });
+  const info1 = await bridge1.start();
+
+  // Pass the exact same port (info1.port) for the second app — it should auto-pick a free port!
+  const bridge2 = createFeedbackServer({ port: info1.port, targetDir: appDir2, autoExecute: false });
+  const info2 = await bridge2.start();
+
+  try {
+    assert.notEqual(info1.port, info2.port);
+    assert.equal(info2.port, info1.port + 1);
+
+    const html1 = await (await fetch(`${info1.url}/`)).text();
+    const html2 = await (await fetch(`${info2.url}/`)).text();
+
+    assert.match(html1, /App One/);
+    assert.match(html1, new RegExp(`${info1.url}/overlay\\.js`));
+    assert.match(html2, /App Two/);
+    assert.match(html2, new RegExp(`${info2.url}/overlay\\.js`));
+  } finally {
+    await bridge1.stop();
+    await bridge2.stop();
+    fs.rmSync(appDir1, { recursive: true, force: true });
+    fs.rmSync(appDir2, { recursive: true, force: true });
+  }
+});

@@ -475,16 +475,61 @@ function inferInstantPreviewStyles(transcript = '', tagName = '') {
   return Object.keys(styles).length > 0 ? styles : null;
 }
 
+export function openUrlInBrowser(url) {
+  try {
+    const platform = process.platform;
+    const cmd = platform === 'darwin' ? 'open' : platform === 'win32' ? 'cmd' : 'xdg-open';
+    const args = platform === 'win32' ? ['/c', 'start', '', url] : [url];
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function listenOnAvailablePort(server, preferredPort, host, maxRetries = 25) {
+  return new Promise((resolve, reject) => {
+    let attempt = 0;
+    let currentPort = Number(preferredPort) || 0;
+
+    const tryListen = () => {
+      const onError = (err) => {
+        server.removeListener('listening', onListening);
+        if (err && err.code === 'EADDRINUSE' && attempt < maxRetries) {
+          attempt++;
+          currentPort = currentPort > 0 && attempt < maxRetries ? currentPort + 1 : 0;
+          tryListen();
+        } else {
+          reject(err);
+        }
+      };
+
+      const onListening = () => {
+        server.removeListener('error', onError);
+        resolve(server.address());
+      };
+
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(currentPort, host);
+    };
+
+    tryListen();
+  });
+}
+
 /**
  * Creates and starts the Voxmark local bridge server.
  */
 export function createFeedbackServer(options = {}) {
   const {
-    port = Number(process.env.QF_PORT || 4747),
+    port = Number(process.env.VOXMARK_PORT || process.env.QF_PORT || 4747),
     host = '127.0.0.1',
     targetDir: rawTargetDir = process.cwd(),
     targetUrl = process.env.VOXMARK_URL || process.env.QF_URL || null,
     demo = false,
+    openBrowser = false,
     agent = process.env.QF_AGENT || 'agy',
     autoExecute = true,
     autoStartApp = undefined,
@@ -1020,73 +1065,73 @@ export function createFeedbackServer(options = {}) {
     server,
     sessions,
     storageDir,
-    start() {
-      return new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(port, host, async () => {
-          if (autoExecute && customAgentRunner === runCodingAgent) {
-            warmUpCodingAgent({ targetDir, agent });
-          }
-          const activePort = getActivePort();
-          if (!resolvedTargetUrl && !demo && !isSelfRepo) {
-            resolvedTargetUrl = detectListeningPortByCwd(targetDir, activePort);
-          }
-          if (!resolvedTargetUrl && !demo && !isSelfRepo && shouldAutoStartApp) {
-            const spawned = await spawnAppDevServer(targetDir, activePort, (detectedUrl) => {
-              resolvedTargetUrl = detectedUrl;
-            });
-            spawnedDevChild = spawned.child;
-            if (spawned.url) {
-              resolvedTargetUrl = spawned.url;
-            }
-          }
-
-          // Watch targetDir for source edits so static apps dynamically reload in browser
-          if (!isSelfRepo && !fileWatcher) {
-            try {
-              fileWatcher = fs.watch(targetDir, { recursive: true }, (_eventType, filename) => {
-                if (!filename) return;
-                const norm = filename.replace(/\\/g, '/');
-                if (
-                  norm.startsWith('.git/') ||
-                  norm.startsWith('node_modules/') ||
-                  norm.startsWith('.quick-feedback/')
-                ) {
-                  return;
-                }
-                const ext = path.extname(norm).toLowerCase();
-                if (!['.html', '.htm', '.css', '.scss', '.js', '.mjs', '.ts', '.tsx', '.jsx', '.vue', '.svelte'].includes(ext)) {
-                  return;
-                }
-                if (watchDebounceTimer) clearTimeout(watchDebounceTimer);
-                watchDebounceTimer = setTimeout(() => {
-                  broadcastEvent({ type: 'file_changed', file: norm });
-                }, 180);
-              });
-              fileWatcher.on('error', () => {});
-            } catch {}
-          }
-
-          const staticEntry = !isSelfRepo ? resolveStaticFile(targetDir, '/', explicitHtmlFile) : null;
-          const hasStaticIndex = Boolean(staticEntry);
-          const mode = demo
-            ? 'demo'
-            : resolvedTargetUrl
-              ? 'proxy'
-              : hasStaticIndex
-                ? 'static'
-                : 'demo';
-          resolve({
-            host,
-            port: activePort,
-            url: `http://${host}:${activePort}`,
-            targetUrl: resolvedTargetUrl,
-            staticEntry,
-            spawnedDevServer: Boolean(spawnedDevChild),
-            mode
-          });
+    async start() {
+      await listenOnAvailablePort(server, port, host);
+      if (autoExecute && customAgentRunner === runCodingAgent) {
+        warmUpCodingAgent({ targetDir, agent });
+      }
+      const activePort = getActivePort();
+      if (!resolvedTargetUrl && !demo && !isSelfRepo) {
+        resolvedTargetUrl = detectListeningPortByCwd(targetDir, activePort);
+      }
+      if (!resolvedTargetUrl && !demo && !isSelfRepo && shouldAutoStartApp) {
+        const spawned = await spawnAppDevServer(targetDir, activePort, (detectedUrl) => {
+          resolvedTargetUrl = detectedUrl;
         });
-      });
+        spawnedDevChild = spawned.child;
+        if (spawned.url) {
+          resolvedTargetUrl = spawned.url;
+        }
+      }
+
+      // Watch targetDir for source edits so static apps dynamically reload in browser
+      if (!isSelfRepo && !fileWatcher) {
+        try {
+          fileWatcher = fs.watch(targetDir, { recursive: true }, (_eventType, filename) => {
+            if (!filename) return;
+            const norm = filename.replace(/\\/g, '/');
+            if (
+              norm.startsWith('.git/') ||
+              norm.startsWith('node_modules/') ||
+              norm.startsWith('.quick-feedback/')
+            ) {
+              return;
+            }
+            const ext = path.extname(norm).toLowerCase();
+            if (!['.html', '.htm', '.css', '.scss', '.js', '.mjs', '.ts', '.tsx', '.jsx', '.vue', '.svelte'].includes(ext)) {
+              return;
+            }
+            if (watchDebounceTimer) clearTimeout(watchDebounceTimer);
+            watchDebounceTimer = setTimeout(() => {
+              broadcastEvent({ type: 'file_changed', file: norm });
+            }, 180);
+          });
+          fileWatcher.on('error', () => {});
+        } catch {}
+      }
+
+      const staticEntry = !isSelfRepo ? resolveStaticFile(targetDir, '/', explicitHtmlFile) : null;
+      const hasStaticIndex = Boolean(staticEntry);
+      const mode = demo
+        ? 'demo'
+        : resolvedTargetUrl
+          ? 'proxy'
+          : hasStaticIndex
+            ? 'static'
+            : 'demo';
+      const boundUrl = `http://${host}:${activePort}`;
+      if (openBrowser) {
+        openUrlInBrowser(boundUrl);
+      }
+      return {
+        host,
+        port: activePort,
+        url: boundUrl,
+        targetUrl: resolvedTargetUrl,
+        staticEntry,
+        spawnedDevServer: Boolean(spawnedDevChild),
+        mode
+      };
     },
     stop() {
       return new Promise((resolve) => {

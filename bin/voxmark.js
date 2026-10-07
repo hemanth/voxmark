@@ -9,6 +9,7 @@ function parseArgs(argv) {
     targetUrl: process.env.VOXMARK_URL || process.env.QF_URL || null,
     agent: process.env.VOXMARK_AGENT || process.env.QF_AGENT || 'agy',
     autoExecute: true,
+    openBrowser: true,
     conversationId: null,
     demo: false,
     help: false
@@ -18,6 +19,8 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') opts.help = true;
     else if (arg === '--demo') opts.demo = true;
+    else if (arg === '--no-open') opts.openBrowser = false;
+    else if (arg === '--open') opts.openBrowser = true;
     else if (arg === '--no-exec' || arg === '--queue-only') opts.autoExecute = false;
     else if ((arg === '--port' || arg === '-p') && argv[i + 1]) opts.port = Number(argv[++i]);
     else if ((arg === '--dir' || arg === '-d') && argv[i + 1]) opts.targetDir = path.resolve(argv[++i]);
@@ -51,7 +54,8 @@ if (opts.help) {
     -d, --dir <path>           Target project directory for the agent to edit (default: cwd)
     -a, --agent <name>         Coding agent CLI to execute (default: agy)
     -c, --conversation <id>    Continue a specific Antigravity conversation ID
-    -p, --port <number>        Bridge port (default: 4747)
+    -p, --port <number>        Preferred bridge port (auto-picks free port if busy, default: 4747)
+    --no-open                  Do not auto-open the bound URL in the browser on start
     --no-exec                  Save feedback sessions without auto-running the agent
     --demo                     Serve the built-in interactive demo sandbox on /
     -h, --help                 Show this help message
@@ -64,6 +68,7 @@ const bridge = createFeedbackServer({
   targetDir: opts.targetDir,
   targetUrl: opts.targetUrl,
   demo: opts.demo,
+  openBrowser: opts.openBrowser,
   agent: opts.agent,
   autoExecute: opts.autoExecute,
   conversationId: opts.conversationId,
