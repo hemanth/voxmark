@@ -2,6 +2,12 @@
 
 Point at your app, say what you want changed out loud, and watch your code update itself in real time.
 
+
+
+https://github.com/user-attachments/assets/4ed7a09e-1308-4565-b865-01560d155ada
+
+
+
 ```bash
 npm install -g voxmark
 ```
